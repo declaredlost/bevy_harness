@@ -7,8 +7,6 @@
 [![Build](https://img.shields.io/github/actions/workflow/status/declaredlost/bevy_harness/build.yml?branch=main&label=build&style=flat-square)](https://github.com/declaredlost/bevy_harness/actions/workflows/build.yml)
 [![Security](https://img.shields.io/github/actions/workflow/status/declaredlost/bevy_harness/security.yml?branch=main&label=security&style=flat-square)](https://github.com/declaredlost/bevy_harness/actions/workflows/security.yml)
 
-[**github.com/declaredlost**](https://github.com/declaredlost)
-
 </div>
 
 ```rust,ignore
