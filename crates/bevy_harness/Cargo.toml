@@ -1,0 +1,44 @@
+# https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[package]
+name = "bevy_harness"
+description = "Testing Bevy apps: the real app, headless, stepped tick by tick, asserted on"
+keywords = ["bevy", "testing", "test"]
+
+version = { workspace = true }
+rust-version = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+publish = { workspace = true }
+
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+
+[dependencies]
+# Game engine
+# `debug` keeps type names, for what failures print.
+bevy = { workspace = true, features = ["std", "debug"] }
+
+# The test attribute
+bevy_harness_macros = { workspace = true, features = [] }
+
+# The examples are tests: `cargo test` runs them.
+[[example]]
+name = "basics"
+test = true
+
+[[example]]
+name = "messages"
+test = true
+
+[[example]]
+name = "fixtures"
+test = true
+
+[[example]]
+name = "worlds"
+test = true
+
+[lints]
+workspace = true
