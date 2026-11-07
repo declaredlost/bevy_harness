@@ -1,0 +1,5 @@
+error: expected no generics: a test is called with what setup builds
+ --> tests/ui/generic_fn.rs:4:11
+  |
+4 | fn generic<T>(app: &mut bevy_harness::TestApp) {}
+  |           ^^^

@@ -5,14 +5,15 @@ use core::ops::{Index, IndexMut};
 use core::time::Duration;
 
 use crate::app::TestApp;
+use crate::time;
 use crate::until::Until;
 
 #[cfg(test)]
 mod tests;
 
 /// Several [`TestApp`]s, each by name, ticked together in the order they
-/// were added: a server, then its clients, each tick. They should share a
-/// tick rate; seconds count in the first's.
+/// were added: a server, then its clients, each tick. They share a tick
+/// rate, which seconds count in.
 ///
 /// ```
 /// use bevy_harness::{TestApp, TestWorld};
@@ -39,7 +40,8 @@ impl TestWorld {
     ///
     /// # Panics
     ///
-    /// If there's already an app called `name`.
+    /// If there's already an app called `name`, or `app` ticks at another
+    /// rate than those before it.
     #[track_caller]
     #[must_use]
     pub fn with(mut self, name: &'static str, app: TestApp) -> Self {
@@ -47,6 +49,14 @@ impl TestWorld {
             self.apps.iter().all(|(other, _)| *other != name),
             "there's already an app called {name:?}"
         );
+        if let Some((first, other)) = self.apps.first() {
+            assert!(
+                other.step() == app.step(),
+                "{name:?} ticks at {} Hz, {first:?} at {} Hz: apps ticked together share a rate",
+                time::hz(app.step()),
+                time::hz(other.step()),
+            );
+        }
         self.apps.push((name, app));
         self
     }
@@ -99,8 +109,8 @@ impl TestWorld {
         }
     }
 
-    /// Runs as many ticks as `length` of game time takes, at the first
-    /// app's rate.
+    /// Runs as many ticks as `length` of game time takes, rounded to the
+    /// nearest.
     pub fn advance(&mut self, length: Duration) {
         self.ticks(self.ticks_in(length));
     }
@@ -116,9 +126,14 @@ impl TestWorld {
         self.advance(crate::time::seconds(seconds));
     }
 
-    /// How many ticks `length` is, at the first app's rate.
+    /// How many ticks `length` is, rounded to the nearest.
     pub(crate) fn ticks_in(&self, length: Duration) -> u32 {
-        self.apps.first().map_or(0, |(_, app)| app.ticks_in(length))
+        time::nearest(length, self.step())
+    }
+
+    /// How long a tick is: its apps' fixed step (64 a second, with none).
+    pub(crate) fn step(&self) -> Duration {
+        self.apps.first().map_or(time::STEP, |(_, app)| app.step())
     }
 
     /// Ticks them all until `holds` holds of them: bounded by

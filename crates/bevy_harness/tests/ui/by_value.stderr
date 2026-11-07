@@ -1,0 +1,5 @@
+error: expected what setup builds by `&mut`: `app: &mut TestApp`
+ --> tests/ui/by_value.rs:4:10
+  |
+4 | fn owned(app: bevy_harness::TestApp) {}
+  |          ^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -52,6 +52,9 @@ proc-macro2 = { version = "1.0", features = [] }
 quote = { version = "1.0", features = [] }
 syn = { version = "3.0", features = [] }
 
+# Testing: the attribute's compile errors
+trybuild = { version = "1.0", features = [] }
+
 # Development: compile our code with light optimizations for fast iteration,
 # and dependencies (Bevy) fully optimized so tests run quickly.
 [profile.dev]

@@ -53,3 +53,11 @@ fn a_missing_app_says_which_there_are() {
     let world = TestWorld::new().with("server", counting());
     let _ = &world["host"];
 }
+
+#[test]
+#[should_panic(expected = "\"client\" ticks at 30 Hz, \"server\" at 64 Hz")]
+fn apps_at_other_rates_are_a_mistake() {
+    let _ = TestWorld::new()
+        .with("server", counting())
+        .with("client", TestApp::builder().fixed_hz(30.0).build());
+}

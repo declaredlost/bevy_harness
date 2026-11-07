@@ -1,0 +1,5 @@
+error: expected a list of plugins: `[PhysicsPlugin, ..]`
+ --> tests/ui/plugins_not_a_list.rs:5:32
+  |
+5 | #[bevy_harness::test(plugins = Physics)]
+  |                                ^^^^^^^

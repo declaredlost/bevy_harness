@@ -19,12 +19,14 @@ fn a_mortal_blow_kills(app: &mut TestApp) {
 
 `TestApp::builder()` starts on Bevy's `MinimalPlugins` (time and tasks, no
 window); `TestApp::bare_builder()` on an empty app, for plugins that bring
-their own. The builder adds what's under test and `build`s it:
+their own time, which `build` leaves alone. The builder adds what's under
+test and `build`s it:
 
 - `plugins(..)`, `systems(schedule, ..)`, and `with(|app| ..)` for
   anything else (messages, resources, observers).
 - `watch::<M>()`: records every `M` the app writes (see Messages).
-- `fixed_hz(hz)`: its tick rate; 64 unless it says.
+- `fixed_hz(hz)`: its tick rate, more than 0. Unless it says, the rate the
+  app sets itself (a plugin's `Time<Fixed>`), or 64.
 
 `build` runs the first update, so `Startup` has run by the time the app
 is handed over; the first tick is the test's. `app()` and `app_mut()`,
@@ -34,7 +36,9 @@ is handed over; the first tick is the test's. `app()` and `app_mut()`,
 
 Each `tick()` is one update running exactly one fixed step
 (`TimeUpdateStrategy::FixedTimesteps`): `FixedUpdate` once, `Update`
-seeing the same step as its delta; `ticks(n)` is `n` of them.
+seeing the same step as its delta, however slow the rate;
+`ticks(n)` is `n` of them. Pausing `Time<Virtual>` or changing its speed
+still holds the ticks back.
 `advance(duration)` is as many ticks as that much game time at the app's
 rate, and `secs(s)` the same in seconds. A negative or non-finite time is
 a mistake in the test, and fails it. Nothing reads the wall clock, so a
@@ -47,22 +51,27 @@ test runs the same on any machine, however loaded.
   `assert(|c: &C| ..)`, `assert_eq(c)`, `assert_despawned()`, `get::<C>()`,
   each chained.
 - `query::<D, F>()`: `assert_len(n)`, `assert_all(..)`, `assert_any(..)`,
-  `assert_none(..)`, `single()`, `len()`, `is_empty()`. Read-only: one
-  naming what was never registered matches nothing.
-- `count::<F>()`: how many match a filter, without changing anything.
+  `assert_none(..)`, `single()`, `len()`, `is_empty()`. It registers the
+  components it names, so one on no entity yet is handled as it should be:
+  `With` it matches nothing, `Without` everything.
+- `count::<F>()`: how many match a filter, registering them the same way.
 
 ## Messages
 
 `write(m)` writes one in, read on the next tick. `watch::<M>()` (on the
-builder, or the app once built) records every `M` written: `read::<M>()`
+builder, or the app once built) records every `M` written from then on,
+whatever writes it, `Last` too, and adds the message if nothing has:
+`read::<M>()`
 takes what was recorded since the last read, and `assert_wrote(|m: &M| ..)`
 fails unless one matches.
 
 ## Waiting
 
 `until(|world| ..)` ticks until something holds, bounded in game time:
-`within_ticks(n)`, `within(duration)` or `within_secs(s)`, failing if it
-never does and returning how many ticks it took.
+`within_ticks(n)`, `within(duration)` or `within_secs(s)` (rounded up to
+whole ticks), failing if it never does and returning how many ticks it
+took. The failure says how much game time that was, at what rate, and
+what it waited for, if `describe("the foe is dead")` said.
 
 ## One system
 
@@ -74,7 +83,8 @@ a query.
 
 `TestWorld::new().with("server", ..).with("client", ..)` ticks its apps
 together, each tick every app's, in the order they were added;
-`world["client"]` is one of them, and `until` waits on all of them. For a
+`world["client"]` is one of them, and `until` waits on all of them. They
+share a tick rate: one added at another fails the test. For a
 server and its clients in one process, linked by a transport there.
 
 ## As a test
@@ -94,9 +104,10 @@ fn a_grip_lets_go(app: &mut TestApp) { .. }
 - `timeout = 5`: wall-clock time, in seconds (`0.5` too, checked as it
   compiles), or any `Duration` expression. The test runs on a thread of its
   own then; a panic in it is still the test's failure. `within` bounds game
-  time; this bounds a hang (a deadlock, a blocking call). A test that times
-  out is failed, but its thread is left running: Rust can't stop a thread
-  from outside.
+  time; this bounds a hang (a deadlock, a blocking call). What setup
+  builds has to be `Send` then. A test that times out is failed, and its
+  app stops at its next tick; one blocked outside a tick is left running:
+  Rust can't stop a thread from outside.
 
 What a setup builds needn't be an app: a fixture holding one and
 whatever else the test needs, by name, is handed over the same way.
@@ -111,8 +122,11 @@ fn both_sides_of_a_duel_strike(duel: &mut Duel) {
 }
 ```
 
-A test takes what its setup builds or nothing; its other attributes
-(`should_panic`, `ignore`) are kept.
+A test takes what its setup builds by `&mut`, or nothing, and returns
+nothing or a `Result<(), E>`, failing on an error. It's a plain `fn`, not
+`async` or generic, and has no `#[test]` of its own; its other attributes
+(`should_panic`, `ignore`) are kept. Anything else is a compile error
+saying so.
 
 ## Failures
 

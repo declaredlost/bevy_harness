@@ -10,12 +10,18 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
-use syn::{Error, Expr, ExprArray, ExprLit, ItemFn, Lit, Meta, Token, UnOp, parse_macro_input};
+use syn::{
+    Attribute, Error, Expr, ExprArray, ExprLit, FnArg, ItemFn, Lit, Meta, ReturnType, Safety,
+    Token, Type, UnOp, parse_macro_input,
+};
 
-/// A test handed what its setup builds, by `&mut`: its app (`fn
-/// name(app: &mut TestApp)`), or a fixture holding the app and whatever
-/// else the test needs by name (`fn name(raid: &mut Raid)`); or nothing at
-/// all.
+/// A test handed what its setup builds, by `&mut`, with a timeout.
+///
+/// What it's handed is its app (`fn name(app: &mut TestApp)`), or a
+/// fixture holding the app and whatever else the test needs by name (`fn
+/// name(raid: &mut Raid)`); or nothing at all. It returns nothing, or a
+/// `Result<(), E>`, failing on an error; it's a plain, safe, non-generic
+/// `fn`, and its other attributes are kept (not another `#[test]`).
 ///
 /// - `setup = ..`: what builds it. A function's path (`setup = server`) is
 ///   called; any other expression (`setup = physical(&["####"])`) is what it
@@ -25,8 +31,9 @@ use syn::{Error, Expr, ExprArray, ExprLit, ItemFn, Lit, Meta, Token, UnOp, parse
 ///   for a test that needs nothing else; not with `setup`, which adds its own.
 /// - `timeout = 5` (seconds, `0.5` too) or any `Duration` expression: fails the
 ///   test if it hasn't finished by then, instead of hanging; none if left out.
-///   The test runs on a thread of its own then, which is left running if it
-///   times out: a thread can't be stopped from outside.
+///   The test runs on a thread of its own then, so what setup builds has to be
+///   `Send`. Past its timeout, the app stops at its next tick; a thread blocked
+///   outside a tick can't be stopped, and is left running.
 ///
 /// ```ignore
 /// #[bevy_harness::test(setup = testing::server, timeout = 5)]
@@ -119,23 +126,113 @@ fn seconds(expr: &Expr) -> syn::Result<Option<f64>> {
     }
 }
 
-/// The test: its body as a function of the app, run on the app `setup`
-/// builds, within its timeout.
-fn expand(options: Options, mut body: ItemFn) -> syn::Result<proc_macro2::TokenStream> {
-    if body.sig.inputs.len() > 1 {
+/// Rejects what the expansion can't run, each with an error saying why.
+fn check(body: &ItemFn) -> syn::Result<()> {
+    let sig = &body.sig;
+    if let Some(asyncness) = sig.asyncness {
         return Err(Error::new_spanned(
-            &body.sig.inputs,
+            asyncness,
+            "expected a plain `fn`: an app is ticked, not awaited",
+        ));
+    }
+    if let Safety::Unsafe(unsafety) = sig.safety {
+        return Err(Error::new_spanned(unsafety, "expected a safe `fn`"));
+    }
+    if let Some(constness) = sig.constness {
+        return Err(Error::new_spanned(
+            constness,
+            "expected a plain `fn`, not `const`",
+        ));
+    }
+    if let Some(abi) = &sig.abi {
+        return Err(Error::new_spanned(
+            abi,
+            "expected a plain `fn`, not `extern`",
+        ));
+    }
+    if !sig.generics.params.is_empty() || sig.generics.where_clause.is_some() {
+        return Err(Error::new_spanned(
+            &sig.generics,
+            "expected no generics: a test is called with what setup builds",
+        ));
+    }
+    if let Some(variadic) = &sig.variadic {
+        return Err(Error::new_spanned(variadic, "expected no `...`"));
+    }
+    if sig.inputs.len() > 1 {
+        return Err(Error::new_spanned(
+            &sig.inputs,
             "expected one argument, what setup builds (`app: &mut TestApp`), or none",
         ));
     }
+    if let Some(input) = sig.inputs.first() {
+        let by_mut = matches!(
+            input,
+            FnArg::Typed(typed) if matches!(&*typed.ty, Type::Reference(by) if by.mutability.is_some())
+        );
+        if !by_mut {
+            return Err(Error::new_spanned(
+                input,
+                "expected what setup builds by `&mut`: `app: &mut TestApp`",
+            ));
+        }
+    }
+    if let Some(test) = body.attrs.iter().find(|attr| is_test(attr)) {
+        return Err(Error::new_spanned(
+            test,
+            "it's a test already: `#[bevy_harness::test]` adds the `#[test]`",
+        ));
+    }
+    Ok(())
+}
+
+/// Whether `attr` makes a test of its own: `#[test]`, `#[tokio::test]`.
+fn is_test(attr: &Attribute) -> bool {
+    attr.path()
+        .segments
+        .last()
+        .is_some_and(|segment| segment.ident == "test")
+}
+
+/// Whether `output` is a `Result`, by its name: `io::Result<()>` too.
+fn returns_result(output: &ReturnType) -> syn::Result<bool> {
+    let ReturnType::Type(_, ty) = output else {
+        return Ok(false);
+    };
+    let result = matches!(
+        &**ty,
+        Type::Path(path) if path.qself.is_none()
+            && path.path.segments.last().is_some_and(|segment| segment.ident == "Result")
+    );
+    let unit = matches!(&**ty, Type::Tuple(tuple) if tuple.elems.is_empty());
+    if result || unit {
+        Ok(result)
+    } else {
+        Err(Error::new_spanned(
+            ty,
+            "expected no return type, or a `Result<(), E>`",
+        ))
+    }
+}
+
+/// The test: its body as a function of the app, run on the app `setup`
+/// builds, within its timeout.
+fn expand(options: Options, mut body: ItemFn) -> syn::Result<proc_macro2::TokenStream> {
+    check(&body)?;
+    let result = returns_result(&body.sig.output)?;
     let name = body.sig.ident.clone();
     let attrs = std::mem::take(&mut body.attrs);
     let vis = body.vis.clone();
     body.sig.ident = syn::Ident::new("body", name.span());
-    let call = if body.sig.inputs.is_empty() {
-        quote!(|_: &mut _| body())
+    let called = if body.sig.inputs.is_empty() {
+        quote!(body())
     } else {
-        quote!(body)
+        quote!(body(it))
+    };
+    let call = if result {
+        quote!(|it: &mut _| ::bevy_harness::__private::ok(#called))
+    } else {
+        quote!(|it: &mut _| #called)
     };
     let setup = match (options.setup, options.plugins) {
         (Some(_), Some(plugins)) => {
@@ -152,17 +249,17 @@ fn expand(options: Options, mut body: ItemFn) -> syn::Result<proc_macro2::TokenS
         }
         (None, None) => quote!(|| ::bevy_harness::TestApp::builder().build()),
     };
-    let timeout = if let Some(timeout) = options.timeout {
-        quote!(::core::option::Option::Some(#timeout))
+    let run = if let Some(timeout) = options.timeout {
+        quote!(::bevy_harness::__private::run_with_timeout(#setup, #call, #timeout))
     } else {
-        quote!(::core::option::Option::None)
+        quote!(::bevy_harness::__private::run(#setup, #call))
     };
     Ok(quote! {
         #[::core::prelude::v1::test]
         #(#attrs)*
         #vis fn #name() {
             #body
-            ::bevy_harness::__private::run(#setup, #call, #timeout);
+            #run;
         }
     })
 }

@@ -1,0 +1,5 @@
+error: expected `setup`, `plugins` or `timeout`
+ --> tests/ui/unknown_key.rs:3:22
+  |
+3 | #[bevy_harness::test(seed = 3)]
+  |                      ^^^^

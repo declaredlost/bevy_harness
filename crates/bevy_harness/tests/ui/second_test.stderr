@@ -1,0 +1,5 @@
+error: it's a test already: `#[bevy_harness::test]` adds the `#[test]`
+ --> tests/ui/second_test.rs:4:1
+  |
+4 | #[test]
+  | ^^^^^^^

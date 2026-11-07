@@ -23,9 +23,6 @@ mod messages;
 #[cfg(test)]
 mod tests;
 
-/// How many fixed ticks a second, unless the builder says.
-const HZ: f64 = 64.0;
-
 /// A Bevy app under test: built from the plugins under test, headless, on
 /// time that moves only a fixed tick at a time, when the test says.
 ///
@@ -33,7 +30,8 @@ const HZ: f64 = 64.0;
 /// no tick yet, time starting on the next) by the time it's handed over.
 pub struct TestApp {
     pub(super) app: App,
-    pub(super) hz: f64,
+    /// How long a tick is: `Time<Fixed>`'s step as it was built.
+    pub(super) step: Duration,
 }
 
 impl TestApp {
@@ -43,16 +41,24 @@ impl TestApp {
     pub fn builder() -> TestAppBuilder {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
-        TestAppBuilder { app, hz: HZ }
+        TestAppBuilder {
+            app,
+            step: None,
+            steps_time: true,
+        }
     }
 
-    /// A builder on an empty app, for plugins that bring their own time:
-    /// what ticks it is up to them.
+    /// A builder on an empty app, for plugins that bring their own time.
+    ///
+    /// What a tick is is up to them: `build` leaves their time alone, but
+    /// for a rate [`fixed_hz`](TestAppBuilder::fixed_hz) sets. Seconds
+    /// count in their `Time<Fixed>`'s step (64 a second without one).
     #[must_use]
     pub fn bare_builder() -> TestAppBuilder {
         TestAppBuilder {
             app: App::new(),
-            hz: HZ,
+            step: None,
+            steps_time: false,
         }
     }
 
@@ -79,7 +85,13 @@ impl TestApp {
     }
 
     /// Runs one update: exactly one fixed tick.
+    ///
+    /// # Panics
+    ///
+    /// If the test has run past its timeout (see [`test`](crate::test)),
+    /// so it stops instead of ticking on.
     pub fn tick(&mut self) {
+        crate::__private::stop_if_timed_out();
         self.app.update();
     }
 
@@ -109,9 +121,12 @@ impl TestApp {
 
     /// How many ticks `length` of game time is, rounded to the nearest.
     pub(crate) fn ticks_in(&self, length: Duration) -> u32 {
-        let tick = Duration::from_secs_f64(1.0 / self.hz).as_nanos().max(1);
-        let ticks = (length.as_nanos() + tick / 2) / tick;
-        u32::try_from(ticks).unwrap_or(u32::MAX)
+        crate::time::nearest(length, self.step)
+    }
+
+    /// How long a tick is: `Time<Fixed>`'s step as it was built.
+    pub(crate) fn step(&self) -> Duration {
+        self.step
     }
 
     /// Spawns `bundle`.
@@ -130,24 +145,26 @@ impl TestApp {
         EntityCheck::new(self.world(), entity)
     }
 
-    /// What `D` matches (filtered by `F`), to assert on. Read-only: it
-    /// matches nothing if what it names was never registered.
-    pub fn query<D, F>(&self) -> QueryCheck<'_, D, F>
+    /// What `D` matches (filtered by `F`), to assert on.
+    ///
+    /// It registers the components it names, so one never added to an
+    /// entity is on none: `With` it matches nothing, `Without` everything.
+    pub fn query<D, F>(&mut self) -> QueryCheck<'_, D, F>
     where
         D: ReadOnlyQueryData + 'static,
         F: QueryFilter + 'static,
     {
-        QueryCheck::new(self.world())
+        let state = self.world_mut().query_filtered::<D, F>();
+        QueryCheck::new(self.world(), state)
     }
 
-    /// How many entities `F` matches: `count::<(With<Player>,
-    /// With<Controlled>)>()`. Read-only, so a condition
-    /// ([`until`](Self::until)) can ask it; none, if what it names was
-    /// never registered.
-    pub fn count<F: QueryFilter>(&self) -> usize {
-        self.world()
-            .try_query_filtered::<(), F>()
-            .map_or(0, |mut state| state.iter(self.world()).count())
+    /// How many entities `F` matches: `count::<With<Player>>()`.
+    ///
+    /// It registers the components it names, as [`query`](Self::query)
+    /// does, and changes nothing else.
+    pub fn count<F: QueryFilter>(&mut self) -> usize {
+        let world = self.world_mut();
+        world.query_filtered::<(), F>().iter(world).count()
     }
 
     /// Writes `message`, for the next update to read.
@@ -155,8 +172,9 @@ impl TestApp {
         self.world_mut().write_message(message);
     }
 
-    /// Records every `M` the app writes from now on (see
-    /// [`TestAppBuilder::watch`]).
+    /// Records every `M` the app writes from now on.
+    ///
+    /// Nothing written before; otherwise as [`TestAppBuilder::watch`].
     pub fn watch<M: Message + Clone>(&mut self) {
         watch::<M>(&mut self.app);
     }
@@ -175,7 +193,7 @@ impl TestApp {
                 describe::short::<M>()
             );
         };
-        core::mem::take(&mut recorded.0)
+        core::mem::take(&mut recorded.written)
     }
 
     /// Asserts one `M` written since they were last read is as `matches`
@@ -194,10 +212,10 @@ impl TestApp {
             );
         };
         assert!(
-            recorded.0.iter().any(matches),
+            recorded.written.iter().any(matches),
             "no {} written as expected; written: {:#?}",
             describe::short::<M>(),
-            recorded.0
+            recorded.written
         );
     }
 

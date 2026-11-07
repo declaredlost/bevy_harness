@@ -1,0 +1,5 @@
+error: expected a timeout in seconds, more than 0
+ --> tests/ui/zero_timeout.rs:3:32
+  |
+3 | #[bevy_harness::test(timeout = 0)]
+  |                                ^

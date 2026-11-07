@@ -3,6 +3,7 @@
 use core::time::Duration;
 
 use bevy::prelude::*;
+use bevy::time::TimeUpdateStrategy;
 
 use crate::TestApp;
 
@@ -221,7 +222,228 @@ fn negative_seconds_are_a_mistake() {
 fn a_query_on_what_was_never_registered_matches_nothing() {
     #[derive(Component)]
     struct Never;
-    let app = TestApp::builder().build();
+    let mut app = TestApp::builder().build();
     app.query::<&Never, ()>().assert_len(0);
     assert!(app.query::<Entity, With<Never>>().is_empty());
+}
+
+#[derive(Resource, Default)]
+struct Runs(u32);
+
+fn run(mut runs: ResMut<Runs>) {
+    runs.0 += 1;
+}
+
+/// An app counting its fixed steps, built by `build`.
+fn counting(build: impl FnOnce(crate::TestAppBuilder) -> crate::TestAppBuilder) -> TestApp {
+    let builder = TestApp::builder()
+        .with(|app| {
+            app.init_resource::<Runs>();
+        })
+        .systems(FixedUpdate, run);
+    build(builder).build()
+}
+
+fn runs(app: &TestApp) -> u32 {
+    app.world().resource::<Runs>().0
+}
+
+#[test]
+fn a_slow_tick_is_still_one_fixed_step() {
+    let mut app = counting(|builder| builder.fixed_hz(2.0));
+    app.ticks(4);
+    assert_eq!(runs(&app), 4);
+    app.secs(2.0);
+    assert_eq!(runs(&app), 8);
+}
+
+#[test]
+fn a_rate_the_app_sets_is_kept() {
+    let mut app = counting(|builder| {
+        builder.with(|app| {
+            app.insert_resource(Time::<Fixed>::from_hz(10.0));
+        })
+    });
+    app.secs(1.0);
+    assert_eq!(runs(&app), 10);
+}
+
+#[test]
+fn a_rate_the_builder_sets_wins() {
+    let mut app = counting(|builder| {
+        builder
+            .with(|app| {
+                app.insert_resource(Time::<Fixed>::from_hz(10.0));
+            })
+            .fixed_hz(20.0)
+    });
+    app.secs(1.0);
+    assert_eq!(runs(&app), 20);
+}
+
+#[test]
+#[should_panic(expected = "isn't a tick rate")]
+fn a_rate_of_nothing_is_a_mistake() {
+    let _ = TestApp::builder().fixed_hz(0.0);
+}
+
+#[test]
+#[should_panic(expected = "isn't a tick rate")]
+fn a_rate_that_isnt_a_number_is_a_mistake() {
+    let _ = TestApp::builder().fixed_hz(f64::NAN);
+}
+
+#[test]
+fn a_bare_app_keeps_its_own_time() {
+    let manual = Duration::from_millis(10);
+    let app = TestApp::bare_builder()
+        .plugins(bevy::time::TimePlugin)
+        .with(|app| {
+            app.insert_resource(TimeUpdateStrategy::ManualDuration(manual));
+        })
+        .build();
+    assert!(matches!(
+        app.world().resource::<TimeUpdateStrategy>(),
+        TimeUpdateStrategy::ManualDuration(length) if *length == manual
+    ));
+}
+
+#[test]
+fn a_query_without_what_was_never_registered_matches_everything() {
+    #[derive(Component)]
+    struct Never;
+    let mut app = TestApp::builder().build();
+    app.spawn(Health(1));
+    app.spawn(Health(2));
+    assert_eq!(app.count::<(With<Health>, Without<Never>)>(), 2);
+    app.query::<(&Health, Has<Never>), Without<Never>>()
+        .assert_len(2)
+        .assert_all(|(_, never)| !never);
+    app.query::<Option<&Never>, With<Health>>().assert_len(2);
+}
+
+#[derive(Message, Debug, Clone, PartialEq)]
+struct Said(u32);
+
+fn talking() -> TestApp {
+    TestApp::builder()
+        .with(|app| {
+            app.add_message::<Said>();
+        })
+        .build()
+}
+
+#[test]
+fn a_late_watch_records_only_what_comes_after() {
+    let mut app = talking();
+    app.write(Said(1));
+    app.tick();
+    app.watch::<Said>();
+    app.write(Said(2));
+    app.tick();
+    assert_eq!(app.read::<Said>(), [Said(2)]);
+}
+
+#[test]
+fn watching_adds_the_message() {
+    let mut app = TestApp::builder().watch::<Said>().build();
+    app.write(Said(1));
+    app.tick();
+    assert_eq!(app.read::<Said>(), [Said(1)]);
+}
+
+/// Says which update it is, last thing in each.
+fn say_last(mut updates: Local<u32>, mut said: MessageWriter<Said>) {
+    *updates += 1;
+    said.write(Said(*updates));
+}
+
+#[test]
+fn a_message_written_last_is_recorded_the_same_tick() {
+    let mut app = TestApp::builder()
+        .systems(Last, say_last)
+        .watch::<Said>()
+        .build();
+    app.read::<Said>();
+    app.tick();
+    assert_eq!(app.read::<Said>(), [Said(2)]);
+}
+
+#[test]
+fn a_short_limit_still_ticks_once() {
+    let mut app = counting(|builder| builder);
+    let ticks = app
+        .until(|world| world.resource::<Runs>().0 == 1)
+        .within(Duration::from_millis(7));
+    assert_eq!(ticks, 1);
+}
+
+#[test]
+#[should_panic(
+    expected = "it didn't hold within 3 ticks (46.875ms of game time, at 64 Hz): the foe is dead"
+)]
+fn a_failure_to_hold_says_how_long_and_what_for() {
+    let mut app = game();
+    app.until(|_| false)
+        .describe("the foe is dead")
+        .within_ticks(3);
+}
+
+/// An app built from what isn't `Send`.
+fn unsendable(shared: std::rc::Rc<u32>) -> TestApp {
+    let mut app = TestApp::builder().build();
+    app.spawn(Health(*shared));
+    app
+}
+
+#[crate::test(setup = unsendable(std::rc::Rc::new(3)))]
+fn a_setup_needs_no_send_without_a_timeout(app: &mut TestApp) {
+    app.query::<&Health, ()>()
+        .assert_all(|health| health.0 == 3);
+}
+
+#[crate::test]
+fn a_test_can_return_a_result(app: &mut TestApp) -> Result<(), String> {
+    let hurt = app.spawn(Health(3));
+    let health = app.world().get::<Health>(hurt).ok_or("no health")?;
+    assert_eq!(health.0, 3);
+    Ok(())
+}
+
+#[crate::test]
+#[should_panic(expected = "the test returned an error: \"no foe\"")]
+fn a_test_returning_an_error_fails(_app: &mut TestApp) -> Result<(), String> {
+    Err("no foe".to_owned())
+}
+
+/// Says when it's dropped: when the app holding it is.
+#[derive(Resource)]
+struct Dropped(std::sync::mpsc::Sender<()>);
+
+impl Drop for Dropped {
+    fn drop(&mut self) {
+        let _ = self.0.send(());
+    }
+}
+
+#[test]
+fn a_test_past_its_timeout_stops_ticking() {
+    let (dropped, gone) = std::sync::mpsc::channel();
+    let setup = move || {
+        let mut app = TestApp::builder().build();
+        app.world_mut().insert_resource(Dropped(dropped));
+        app
+    };
+    let timed_out = std::panic::catch_unwind(|| {
+        crate::__private::run_with_timeout(
+            setup,
+            |app: &mut TestApp| {
+                app.until(|_| false).within_ticks(u32::MAX);
+            },
+            Duration::from_millis(50),
+        );
+    });
+    assert!(timed_out.is_err(), "it timed out");
+    gone.recv_timeout(Duration::from_secs(5))
+        .expect("its app stopped and was dropped");
 }

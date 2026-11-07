@@ -1,0 +1,5 @@
+error: `plugins` builds the minimal app: with `setup`, add them there
+  --> tests/ui/setup_and_plugins.rs:13:48
+   |
+13 | #[bevy_harness::test(setup = server, plugins = [Physics])]
+   |                                                ^^^^^^^^^

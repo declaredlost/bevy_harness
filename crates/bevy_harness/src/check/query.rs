@@ -5,29 +5,20 @@ use bevy::ecs::world::World;
 
 use crate::describe;
 
-/// What a query matches, to assert on. One naming something never
-/// registered in the world matches nothing.
+/// What a query matches, to assert on.
 pub struct QueryCheck<'w, D: ReadOnlyQueryData + 'static, F: QueryFilter + 'static> {
     world: &'w World,
-    /// `None` if what it names was never registered.
-    state: Option<QueryState<D, F>>,
+    state: QueryState<D, F>,
 }
 
 impl<'w, D: ReadOnlyQueryData + 'static, F: QueryFilter + 'static> QueryCheck<'w, D, F> {
-    pub(crate) fn new(world: &'w World) -> Self {
-        Self {
-            world,
-            state: world.try_query_filtered::<D, F>(),
-        }
+    pub(crate) fn new(world: &'w World, state: QueryState<D, F>) -> Self {
+        Self { world, state }
     }
 
-    /// What it matches: nothing, if what it names was never registered.
+    /// What it matches.
     fn matches(&mut self) -> impl Iterator<Item = ROQueryItem<'w, '_, D>> {
-        let world = self.world;
-        self.state
-            .as_mut()
-            .into_iter()
-            .flat_map(move |state| state.iter(world))
+        self.state.iter(self.world)
     }
 
     /// How many it matches.
@@ -48,11 +39,11 @@ impl<'w, D: ReadOnlyQueryData + 'static, F: QueryFilter + 'static> QueryCheck<'w
     #[track_caller]
     pub fn single(&mut self) -> ROQueryItem<'w, '_, D> {
         let found = self.len();
-        let single = self.state.as_mut().map(|state| state.single(self.world));
-        match single {
-            Some(Ok(item)) => item,
-            Some(Err(QuerySingleError::NoEntities(_) | QuerySingleError::MultipleEntities(_)))
-            | None => panic!("{} matches {found}, not one", describe::short::<D>()),
+        match self.state.single(self.world) {
+            Ok(item) => item,
+            Err(QuerySingleError::NoEntities(_) | QuerySingleError::MultipleEntities(_)) => {
+                panic!("{} matches {found}, not one", describe::short::<D>())
+            }
         }
     }
 

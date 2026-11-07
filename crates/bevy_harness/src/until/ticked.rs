@@ -20,8 +20,8 @@ pub trait Ticked: sealed::Sealed {
     /// Runs one tick.
     fn tick(&mut self);
 
-    /// How many ticks `length` of game time is, rounded to the nearest.
-    fn ticks_in(&self, length: Duration) -> u32;
+    /// How long a tick is: its (first) app's fixed step.
+    fn step(&self) -> Duration;
 }
 
 mod sealed {
@@ -43,8 +43,8 @@ impl Ticked for TestApp {
         self.tick();
     }
 
-    fn ticks_in(&self, length: Duration) -> u32 {
-        self.ticks_in(length)
+    fn step(&self) -> Duration {
+        self.step()
     }
 }
 
@@ -59,7 +59,7 @@ impl Ticked for TestWorld {
         self.tick();
     }
 
-    fn ticks_in(&self, length: Duration) -> u32 {
-        self.ticks_in(length)
+    fn step(&self) -> Duration {
+        self.step()
     }
 }

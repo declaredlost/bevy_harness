@@ -1,0 +1,5 @@
+error: expected one argument, what setup builds (`app: &mut TestApp`), or none
+ --> tests/ui/two_arguments.rs:4:8
+  |
+4 | fn two(app: &mut bevy_harness::TestApp, other: &mut bevy_harness::TestApp) {}
+  |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

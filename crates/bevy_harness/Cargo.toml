@@ -22,6 +22,10 @@ bevy = { workspace = true, features = ["std", "debug"] }
 # The test attribute
 bevy_harness_macros = { workspace = true, features = [] }
 
+[dev-dependencies]
+# What the attribute rejects, and how it says so
+trybuild = { workspace = true, features = [] }
+
 # The examples are tests: `cargo test` runs them.
 [[example]]
 name = "basics"

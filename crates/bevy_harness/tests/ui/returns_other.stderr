@@ -1,0 +1,5 @@
+error: expected no return type, or a `Result<(), E>`
+ --> tests/ui/returns_other.rs:4:48
+  |
+4 | fn counted(app: &mut bevy_harness::TestApp) -> u32 {
+  |                                                ^^^

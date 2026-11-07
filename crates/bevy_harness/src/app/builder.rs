@@ -6,17 +6,21 @@ use bevy::app::{App, Plugins};
 use bevy::ecs::message::Message;
 use bevy::ecs::schedule::{IntoScheduleConfigs, ScheduleLabel};
 use bevy::ecs::system::ScheduleSystem;
-use bevy::time::{Fixed, Time, TimeUpdateStrategy};
+use bevy::time::{Fixed, Time, TimeUpdateStrategy, Virtual};
 
 use super::TestApp;
 use super::messages::watch;
+use crate::time;
 
 /// What a [`TestApp`] is built from: Bevy's minimal plugins (time, tasks,
 /// no window), the plugins and systems under test, the messages to
 /// record, and its tick rate.
 pub struct TestAppBuilder {
     pub(super) app: App,
-    pub(super) hz: f64,
+    /// The tick's length, if the builder sets it.
+    pub(super) step: Option<Duration>,
+    /// Whether it steps time a fixed tick per update: not on a bare app.
+    pub(super) steps_time: bool,
 }
 
 impl TestAppBuilder {
@@ -38,19 +42,28 @@ impl TestAppBuilder {
         self
     }
 
-    /// Records every `M` the app writes, whatever writes it, for
-    /// [`TestApp::read`] and [`TestApp::assert_wrote`].
+    /// Records every `M` the app writes, whatever writes it.
+    ///
+    /// For [`TestApp::read`] and [`TestApp::assert_wrote`]; it adds the
+    /// message (`add_message::<M>()`) if nothing has yet.
     #[must_use]
     pub fn watch<M: Message + Clone>(mut self) -> Self {
         watch::<M>(&mut self.app);
         self
     }
 
-    /// Fixed ticks a second (64 unless set): what [`TestApp::advance`]
-    /// counts in, and `Time<Fixed>`'s step.
+    /// Fixed ticks a second: `Time<Fixed>`'s step, and each tick's.
+    ///
+    /// What [`TestApp::advance`] counts in. Unless set, the rate the app
+    /// sets itself (a plugin's, or `with`'s `Time<Fixed>`), or 64.
+    ///
+    /// # Panics
+    ///
+    /// If `hz` isn't more than 0 and finite.
+    #[track_caller]
     #[must_use]
     pub fn fixed_hz(mut self, hz: f64) -> Self {
-        self.hz = hz;
+        self.step = Some(time::step(hz));
         self
     }
 
@@ -62,22 +75,42 @@ impl TestAppBuilder {
         self
     }
 
-    /// Builds the app, on time a fixed tick per update: finishes its
-    /// plugins, and runs its first update, `Startup` (time starts on the
-    /// next, so no tick yet).
+    /// Builds the app, on time a fixed tick per update, and starts it.
+    ///
+    /// It finishes its plugins, and runs its first update, `Startup` (time
+    /// starts on the next, so no tick yet). Each update then moves real
+    /// time one fixed step (`TimeUpdateStrategy::FixedTimesteps`), and
+    /// `Time<Virtual>` is let take a whole step at once; pausing virtual
+    /// time or changing its speed still holds the ticks back. A bare app's
+    /// time is left as its plugins set it.
     #[must_use]
     pub fn build(mut self) -> TestApp {
-        self.app
-            .insert_resource(Time::<Fixed>::from_duration(Duration::from_secs_f64(
-                1.0 / self.hz,
-            )))
-            .insert_resource(TimeUpdateStrategy::FixedTimesteps(1));
+        if let Some(step) = self.step {
+            self.app.insert_resource(Time::<Fixed>::from_duration(step));
+        }
+        if self.steps_time {
+            self.app
+                .insert_resource(TimeUpdateStrategy::FixedTimesteps(1));
+        }
         self.app.finish();
         self.app.cleanup();
+        let world = self.app.world_mut();
+        if self.steps_time && !world.contains_resource::<Time<Fixed>>() {
+            world.insert_resource(Time::<Fixed>::from_duration(time::STEP));
+        }
+        let step = world
+            .get_resource::<Time<Fixed>>()
+            .map_or(time::STEP, Time::timestep);
+        if self.steps_time
+            && let Some(mut virtual_time) = world.get_resource_mut::<Time<Virtual>>()
+            && virtual_time.max_delta() < step
+        {
+            virtual_time.set_max_delta(step);
+        }
         self.app.update();
         TestApp {
             app: self.app,
-            hz: self.hz,
+            step,
         }
     }
 }
