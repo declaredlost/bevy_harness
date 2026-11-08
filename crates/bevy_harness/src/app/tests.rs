@@ -76,7 +76,7 @@ fn it_ticks_until_something_holds_and_says_how_long() {
     let mut app = game();
     let hurt = app.spawn(Health(5));
     let ticks = app
-        .until(|world| world.get::<Health>(hurt) == Some(&Health(0)))
+        .until(|app| app.entity(hurt).try_get::<Health>() == Some(&Health(0)))
         .within_secs(1.0);
     assert_eq!(ticks, 5);
 }
@@ -86,7 +86,7 @@ fn it_ticks_until_something_holds_and_says_how_long() {
 fn ticking_until_fails_when_it_never_holds() {
     let mut app = game();
     let hurt = app.spawn(Health(50));
-    app.until(|world| world.get::<Health>(hurt) == Some(&Health(0)))
+    app.until(|app| app.entity(hurt).try_get::<Health>() == Some(&Health(0)))
         .within_ticks(3);
 }
 
@@ -245,7 +245,7 @@ fn counting(build: impl FnOnce(crate::TestAppBuilder) -> crate::TestAppBuilder) 
 }
 
 fn runs(app: &TestApp) -> u32 {
-    app.world().resource::<Runs>().0
+    app.resource::<Runs>().0
 }
 
 #[test]
@@ -303,7 +303,7 @@ fn a_bare_app_keeps_its_own_time() {
         })
         .build();
     assert!(matches!(
-        app.world().resource::<TimeUpdateStrategy>(),
+        app.resource::<TimeUpdateStrategy>(),
         TimeUpdateStrategy::ManualDuration(length) if *length == manual
     ));
 }
@@ -373,7 +373,7 @@ fn a_message_written_last_is_recorded_the_same_tick() {
 fn a_short_limit_still_ticks_once() {
     let mut app = counting(|builder| builder);
     let ticks = app
-        .until(|world| world.resource::<Runs>().0 == 1)
+        .until(|app| app.resource::<Runs>().0 == 1)
         .within(Duration::from_millis(7));
     assert_eq!(ticks, 1);
 }
@@ -405,7 +405,7 @@ fn a_setup_needs_no_send_without_a_timeout(app: &mut TestApp) {
 #[crate::test]
 fn a_test_can_return_a_result(app: &mut TestApp) -> Result<(), String> {
     let hurt = app.spawn(Health(3));
-    let health = app.world().get::<Health>(hurt).ok_or("no health")?;
+    let health = app.entity(hurt).try_get::<Health>().ok_or("no health")?;
     assert_eq!(health.0, 3);
     Ok(())
 }
@@ -431,7 +431,7 @@ fn a_test_past_its_timeout_stops_ticking() {
     let (dropped, gone) = std::sync::mpsc::channel();
     let setup = move || {
         let mut app = TestApp::builder().build();
-        app.world_mut().insert_resource(Dropped(dropped));
+        app.insert_resource(Dropped(dropped));
         app
     };
     let timed_out = std::panic::catch_unwind(|| {
@@ -446,4 +446,276 @@ fn a_test_past_its_timeout_stops_ticking() {
     assert!(timed_out.is_err(), "it timed out");
     gone.recv_timeout(Duration::from_secs(5))
         .expect("its app stopped and was dropped");
+}
+
+#[derive(Event, Debug, Clone, PartialEq)]
+struct Rang(u32);
+
+#[derive(EntityEvent, Debug, Clone, PartialEq)]
+struct Struck {
+    entity: Entity,
+    damage: u32,
+}
+
+#[test]
+fn triggered_events_are_recorded_on_an_entity_or_none() {
+    let mut app = TestApp::builder()
+        .watch_triggered::<Rang>()
+        .watch_triggered::<Struck>()
+        .build();
+    let struck = app.spawn(Health(3));
+    app.trigger(Rang(1));
+    app.trigger(Struck {
+        entity: struck,
+        damage: 2,
+    });
+    app.trigger(Rang(2));
+    app.assert_triggered(|rang: &Rang| rang.0 == 2);
+    app.assert_triggered(|hit: &Struck| hit.entity == struck && hit.damage == 2);
+    assert_eq!(app.read_triggered::<Rang>(), [Rang(1), Rang(2)]);
+    assert!(app.read_triggered::<Rang>().is_empty(), "read once");
+}
+
+/// Rings once, as it starts.
+fn ring_at_startup(mut commands: Commands) {
+    commands.trigger(Rang(0));
+}
+
+#[test]
+fn an_event_triggered_at_startup_is_recorded_when_watched_on_the_builder() {
+    let mut app = TestApp::builder()
+        .systems(Startup, ring_at_startup)
+        .watch_triggered::<Rang>()
+        .build();
+    assert_eq!(app.read_triggered::<Rang>(), [Rang(0)]);
+}
+
+#[test]
+fn a_late_triggered_watch_records_only_what_comes_after() {
+    let mut app = TestApp::builder().build();
+    app.trigger(Rang(1));
+    app.watch_triggered::<Rang>();
+    app.watch_triggered::<Rang>();
+    app.trigger(Rang(2));
+    assert_eq!(app.read_triggered::<Rang>(), [Rang(2)], "recorded once");
+}
+
+#[test]
+#[should_panic(expected = "no Rang triggered as expected; triggered: [\n    Rang(\n        1,")]
+fn a_failure_says_what_was_triggered_instead() {
+    let mut app = TestApp::builder().watch_triggered::<Rang>().build();
+    app.trigger(Rang(1));
+    app.assert_triggered(|rang: &Rang| rang.0 == 2);
+}
+
+#[test]
+fn nothing_triggered_as_it_shouldnt_be_passes() {
+    let mut app = TestApp::builder().watch_triggered::<Rang>().build();
+    app.assert_triggered_none(|_: &Rang| true);
+    app.trigger(Rang(1));
+    app.assert_triggered_none(|rang: &Rang| rang.0 == 2);
+}
+
+#[test]
+#[should_panic(expected = "1 Rang triggered that shouldn't be")]
+fn something_triggered_as_it_shouldnt_be_fails() {
+    let mut app = TestApp::builder().watch_triggered::<Rang>().build();
+    app.trigger(Rang(1));
+    app.trigger(Rang(2));
+    app.assert_triggered_none(|rang: &Rang| rang.0 == 2);
+}
+
+#[test]
+#[should_panic(expected = "Rang isn't watched: `watch_triggered::<Rang>()` it first")]
+fn reading_what_isnt_triggered_and_watched_is_a_mistake() {
+    TestApp::builder().build().read_triggered::<Rang>();
+}
+
+#[test]
+#[should_panic(expected = "Said isn't watched: `watch::<Said>()` it first")]
+fn reading_what_isnt_written_and_watched_is_a_mistake() {
+    talking().read::<Said>();
+}
+
+#[test]
+fn nothing_written_as_it_shouldnt_be_passes() {
+    let mut app = talking();
+    app.watch::<Said>();
+    app.assert_wrote_none(|_: &Said| true);
+    app.write(Said(1));
+    app.tick();
+    app.assert_wrote_none(|said: &Said| said.0 == 2);
+}
+
+#[test]
+#[should_panic(expected = "1 Said written that shouldn't be: [\n    Said(\n        2,")]
+fn something_written_as_it_shouldnt_be_fails() {
+    let mut app = talking();
+    app.watch::<Said>();
+    app.write(Said(1));
+    app.write(Said(2));
+    app.tick();
+    app.assert_wrote_none(|said: &Said| said.0 == 2);
+}
+
+/// Singled out.
+#[derive(Component)]
+struct Marked;
+
+#[test]
+fn the_one_component_a_filter_matches_is_changed() {
+    let mut app = game();
+    let bleeding = app.spawn((Health(5), Marked));
+    app.spawn(Health(9));
+    app.single_mut::<Health, With<Marked>>().0 = 1;
+    app.entity(bleeding).assert_eq(Health(1));
+}
+
+#[test]
+#[should_panic(expected = "Query<&mut Health, With<Marked>> matches 2, not one")]
+fn changing_the_one_of_several_says_how_many() {
+    let mut app = game();
+    app.spawn((Health(5), Marked));
+    app.spawn((Health(9), Marked));
+    let _ = app.single_mut::<Health, With<Marked>>();
+}
+
+#[test]
+#[should_panic(expected = "Query<&mut Health> matches 0, not one")]
+fn changing_the_one_of_none_says_so() {
+    let _ = game().single_mut::<Health, ()>();
+}
+
+#[test]
+#[should_panic(expected = "Query<&Health, With<Marked>> matches 0, not one")]
+fn a_query_failure_says_the_query() {
+    game().query::<&Health, With<Marked>>().single();
+}
+
+#[test]
+fn an_entity_is_found_by_name() {
+    let mut app = game();
+    app.spawn(Name::new("foe"));
+    let hero = app.spawn(Name::new("hero"));
+    assert_eq!(app.named("hero"), hero);
+}
+
+#[test]
+fn a_name_is_looked_for_without_failing() {
+    let mut app = game();
+    let hero = app.spawn(Name::new("hero"));
+    assert_eq!(app.try_named("hero"), Some(hero));
+    assert_eq!(app.try_named("villain"), None);
+    assert_eq!(TestApp::builder().build().try_named("hero"), None);
+}
+
+#[test]
+#[should_panic(expected = "2 entities are called \"twin\"")]
+fn a_name_several_have_is_a_mistake_looked_for_too() {
+    let mut app = game();
+    app.spawn(Name::new("twin"));
+    app.spawn(Name::new("twin"));
+    let _ = app.try_named("twin");
+}
+
+#[test]
+#[should_panic(expected = "nothing is called \"villain\"; named are [\"foe\", \"hero\"]")]
+fn a_name_nothing_has_says_which_there_are() {
+    let mut app = game();
+    app.spawn(Name::new("hero"));
+    app.spawn(Name::new("foe"));
+    let _ = app.named("villain");
+}
+
+#[test]
+#[should_panic(expected = "nothing is called \"hero\"; named are []")]
+fn a_name_in_an_app_naming_nothing_is_found_nowhere() {
+    let _ = TestApp::builder().build().named("hero");
+}
+
+#[test]
+#[should_panic(expected = "2 entities are called \"twin\"")]
+fn a_name_several_have_is_a_mistake() {
+    let mut app = game();
+    app.spawn(Name::new("twin"));
+    app.spawn(Name::new("twin"));
+    let _ = app.named("twin");
+}
+
+#[test]
+fn resources_are_read_changed_inserted_and_initialized() {
+    let mut app = TestApp::builder().build();
+    app.init_resource::<Runs>();
+    assert_eq!(app.resource::<Runs>().0, 0);
+    app.resource_mut::<Runs>().0 = 4;
+    app.init_resource::<Runs>();
+    assert_eq!(app.resource::<Runs>().0, 4, "initialized once");
+    app.insert_resource(Runs(7));
+    assert_eq!(app.resource::<Runs>().0, 7);
+}
+
+#[test]
+#[should_panic(expected = "there's no Runs resource")]
+fn a_missing_resource_says_which() {
+    let _ = TestApp::builder().build().resource::<Runs>();
+}
+
+#[test]
+#[should_panic(expected = "there's no Runs resource")]
+fn a_missing_resource_to_change_says_which() {
+    let _ = TestApp::builder().build().resource_mut::<Runs>();
+}
+
+#[test]
+fn an_entity_is_asked_about_without_failing() {
+    let mut app = game();
+    let hurt = app.spawn(Health(2));
+    let check = app.entity(hurt);
+    assert!(check.is_spawned());
+    assert!(check.has::<Health>());
+    assert!(!check.has::<Name>());
+    assert_eq!(check.try_get::<Health>(), Some(&Health(2)));
+    assert_eq!(check.try_get::<Name>(), None);
+    app.entity_mut(hurt).despawn();
+    let gone = app.entity(hurt);
+    assert!(!gone.is_spawned());
+    assert!(!gone.has::<Health>());
+    gone.assert_despawned();
+}
+
+#[test]
+fn a_condition_queries_as_a_test_does() {
+    let mut app = game();
+    app.spawn(Health(2));
+    let ticks = app
+        .until(|app| app.query::<&Health, ()>().single().0 == 0)
+        .within_secs(1.0);
+    assert_eq!(ticks, 2);
+}
+
+#[test]
+fn a_condition_finds_by_name_as_a_test_does() {
+    let mut app = game();
+    app.spawn((Name::new("hurt"), Health(3)));
+    let ticks = app
+        .until(|app| app.entity(app.named("hurt")).try_get::<Health>() == Some(&Health(0)))
+        .within_secs(1.0);
+    assert_eq!(ticks, 3);
+}
+
+/// Rings back, through commands, when rung.
+fn ring_back(rang: On<Rang>, mut commands: Commands) {
+    if rang.0 == 1 {
+        commands.trigger(Rang(2));
+        commands.spawn(Health(rang.0));
+    }
+}
+
+#[test]
+fn what_an_observer_queues_is_done_when_a_trigger_returns() {
+    let mut app = TestApp::builder().watch_triggered::<Rang>().build();
+    app.app_mut().add_observer(ring_back);
+    app.trigger(Rang(1));
+    assert_eq!(app.read_triggered::<Rang>(), [Rang(1), Rang(2)]);
+    app.query::<&Health, ()>().assert_len(1);
 }

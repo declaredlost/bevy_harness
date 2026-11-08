@@ -1,5 +1,7 @@
-//! How an entity reads in a failure: by its name if it has one, and what
-//! it's made of.
+//! How things read in a failure: an entity by its name if it has one,
+//! and what it's made of; a query as it's written.
+
+use core::any::TypeId;
 
 use bevy::ecs::entity::Entity;
 use bevy::ecs::name::Name;
@@ -9,6 +11,15 @@ use bevy::utils::DebugName;
 /// `T`'s name, short: `Health`, not its path.
 pub(crate) fn short<T>() -> String {
     DebugName::type_name::<T>().shortname().to_string()
+}
+
+/// A query as it's written: `Query<&Health>`, `Query<&Health, With<Dead>>`.
+pub(crate) fn query<D: 'static, F: 'static>() -> String {
+    if TypeId::of::<F>() == TypeId::of::<()>() {
+        format!("Query<{}>", short::<D>())
+    } else {
+        format!("Query<{}, {}>", short::<D>(), short::<F>())
+    }
 }
 
 /// `entity` as a failure names it: `"player" (7v1)`, or its id alone.

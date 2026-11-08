@@ -138,7 +138,10 @@ impl TestWorld {
 
     /// Ticks them all until `holds` holds of them: bounded by
     /// [`Until::within_ticks`] or [`Until::within`].
-    pub fn until<P: FnMut(&TestWorld) -> bool>(&mut self, holds: P) -> Until<'_, TestWorld, P> {
+    ///
+    /// `holds` is handed the apps, each by name:
+    /// `|world| world["client"].count::<With<Player>>() == 1`.
+    pub fn until<P: FnMut(&mut TestWorld) -> bool>(&mut self, holds: P) -> Until<'_, TestWorld, P> {
         Until::new(self, holds)
     }
 }

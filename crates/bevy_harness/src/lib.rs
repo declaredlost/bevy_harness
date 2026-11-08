@@ -5,10 +5,14 @@
 //! under test, on time that only moves when the test moves it: each
 //! [tick](TestApp::ticks) runs exactly one fixed step. Messages go in
 //! ([`write`](TestApp::write)) and are recorded coming out
-//! ([`watch`](TestAppBuilder::watch), [`read`](TestApp::read)); entities
-//! and queries are asserted on ([`entity`](TestApp::entity),
-//! [`query`](TestApp::query)), each failure saying what was there instead,
-//! at the test's own line.
+//! ([`watch`](TestAppBuilder::watch), [`read`](TestApp::read)); so are
+//! observer events ([`trigger`](TestApp::trigger),
+//! [`watch_triggered`](TestAppBuilder::watch_triggered),
+//! [`read_triggered`](TestApp::read_triggered)). Entities and queries are
+//! asserted on ([`entity`](TestApp::entity), [`query`](TestApp::query)),
+//! each failure saying what was there instead, at the test's own line; and
+//! [`until`](TestApp::until) ticks until a condition, asked of the app with
+//! all of that, holds.
 //!
 //! ```
 //! use bevy::prelude::*;

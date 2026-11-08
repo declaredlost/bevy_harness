@@ -3,6 +3,7 @@
 use core::time::Duration;
 
 use bevy::app::{App, Plugins};
+use bevy::ecs::event::Event;
 use bevy::ecs::message::Message;
 use bevy::ecs::schedule::{IntoScheduleConfigs, ScheduleLabel};
 use bevy::ecs::system::ScheduleSystem;
@@ -10,11 +11,12 @@ use bevy::time::{Fixed, Time, TimeUpdateStrategy, Virtual};
 
 use super::TestApp;
 use super::messages::watch;
+use super::triggered::watch_triggered;
 use crate::time;
 
 /// What a [`TestApp`] is built from: Bevy's minimal plugins (time, tasks,
-/// no window), the plugins and systems under test, the messages to
-/// record, and its tick rate.
+/// no window), the plugins and systems under test, the messages and
+/// events to record, and its tick rate.
 pub struct TestAppBuilder {
     pub(super) app: App,
     /// The tick's length, if the builder sets it.
@@ -49,6 +51,17 @@ impl TestAppBuilder {
     #[must_use]
     pub fn watch<M: Message + Clone>(mut self) -> Self {
         watch::<M>(&mut self.app);
+        self
+    }
+
+    /// Records every `E` triggered in the app, whatever triggers it: on an
+    /// entity or none, from its plugins' `Startup` on.
+    ///
+    /// For [`TestApp::read_triggered`] and [`TestApp::assert_triggered`];
+    /// a global observer records them, as they're triggered.
+    #[must_use]
+    pub fn watch_triggered<E: Event + Clone>(mut self) -> Self {
+        watch_triggered::<E>(&mut self.app);
         self
     }
 

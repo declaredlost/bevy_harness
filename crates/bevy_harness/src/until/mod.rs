@@ -9,14 +9,19 @@ use crate::time;
 
 /// Ticks an app (or apps) until `holds` holds, at most so long: failing,
 /// at the test's line, if it never does.
-pub struct Until<'a, T: Ticked, P: FnMut(&T::View) -> bool> {
+///
+/// `holds` is asked of the app itself, by `&mut`, so everything a test
+/// asks with works in it too: [`query`](crate::TestApp::query) registers
+/// what it names, which is why it's `&mut`. It's asked before each tick,
+/// and once after the last.
+pub struct Until<'a, T: Ticked, P: FnMut(&mut T) -> bool> {
     ticked: &'a mut T,
     holds: P,
     /// What `holds` checks, for the failure to say.
     what: Option<&'a str>,
 }
 
-impl<'a, T: Ticked, P: FnMut(&T::View) -> bool> Until<'a, T, P> {
+impl<'a, T: Ticked, P: FnMut(&mut T) -> bool> Until<'a, T, P> {
     pub(crate) fn new(ticked: &'a mut T, holds: P) -> Self {
         Self {
             ticked,
@@ -43,7 +48,7 @@ impl<'a, T: Ticked, P: FnMut(&T::View) -> bool> Until<'a, T, P> {
     #[track_caller]
     pub fn within_ticks(mut self, limit: u32) -> u32 {
         for ticks in 0..=limit {
-            if (self.holds)(self.ticked.view()) {
+            if (self.holds)(self.ticked) {
                 return ticks;
             }
             if ticks < limit {
