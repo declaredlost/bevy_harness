@@ -21,7 +21,7 @@ fn counting() -> TestApp {
 }
 
 fn stacked(world: &TestWorld, name: &str) -> u32 {
-    world[name].world().resource::<Count>().0
+    world[name].resource::<Count>().0
 }
 
 #[test]
@@ -60,4 +60,18 @@ fn apps_at_other_rates_are_a_mistake() {
     let _ = TestWorld::new()
         .with("server", counting())
         .with("client", TestApp::builder().fixed_hz(30.0).build());
+}
+
+#[test]
+fn a_condition_asks_each_app_as_a_test_does() {
+    let mut world = TestWorld::new()
+        .with("server", counting())
+        .with("client", counting());
+    world["client"].spawn(Name::new("player"));
+    let ticks = world
+        .until(|world| {
+            world["client"].count::<With<Name>>() == 1 && world["server"].resource::<Count>().0 == 4
+        })
+        .within_secs(1.0);
+    assert_eq!(ticks, 4);
 }

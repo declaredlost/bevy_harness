@@ -98,7 +98,7 @@ mod tests {
         app.write(Hit { target, damage: 3 });
         app.tick();
         app.entity(target).assert_eq(Health(7));
-        assert!(app.read::<Died>().is_empty());
+        app.assert_wrote_none(|_: &Died| true);
     }
 
     #[bevy_harness::test(setup = combat)]

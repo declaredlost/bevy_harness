@@ -47,7 +47,7 @@ fn main() {
     let mut app = TestApp::builder().plugins(WoundsPlugin).build();
     let hurt = app.spawn((Name::new("hurt"), Health(3), Bleeding));
     let ticks = app
-        .until(|world| world.get::<Dead>(hurt).is_some())
+        .until(|app| app.entity(hurt).has::<Dead>())
         .within_secs(1.0);
     println!("bled out in {ticks} ticks");
 }
@@ -107,7 +107,7 @@ mod tests {
     fn it_ticks_until_something_holds_and_says_how_long(app: &mut TestApp) {
         let hurt = app.spawn((Health(5), Bleeding));
         let ticks = app
-            .until(|world| world.get::<Dead>(hurt).is_some())
+            .until(|app| app.entity(hurt).has::<Dead>())
             .within_secs(1.0);
         assert_eq!(ticks, 5);
     }

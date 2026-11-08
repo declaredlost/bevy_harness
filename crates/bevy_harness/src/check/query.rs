@@ -42,7 +42,7 @@ impl<'w, D: ReadOnlyQueryData + 'static, F: QueryFilter + 'static> QueryCheck<'w
         match self.state.single(self.world) {
             Ok(item) => item,
             Err(QuerySingleError::NoEntities(_) | QuerySingleError::MultipleEntities(_)) => {
-                panic!("{} matches {found}, not one", describe::short::<D>())
+                panic!("{} matches {found}, not one", describe::query::<D, F>())
             }
         }
     }
@@ -59,7 +59,7 @@ impl<'w, D: ReadOnlyQueryData + 'static, F: QueryFilter + 'static> QueryCheck<'w
             found,
             n,
             "{} matches {found}, not {n}",
-            describe::short::<D>()
+            describe::query::<D, F>()
         );
         self
     }
@@ -81,8 +81,8 @@ impl<'w, D: ReadOnlyQueryData + 'static, F: QueryFilter + 'static> QueryCheck<'w
         }
         assert!(
             failed == 0,
-            "{failed} of {found} {} aren't as expected",
-            describe::short::<D>()
+            "{failed} of the {found} {} matches aren't as expected",
+            describe::query::<D, F>()
         );
         self
     }
@@ -93,13 +93,22 @@ impl<'w, D: ReadOnlyQueryData + 'static, F: QueryFilter + 'static> QueryCheck<'w
     ///
     /// If none is, saying how many there were.
     #[track_caller]
-    pub fn assert_any(&mut self, holds: impl FnMut(ROQueryItem<'_, '_, D>) -> bool) -> &mut Self {
-        let found = self.len();
-        let any = self.matches().any(holds);
+    pub fn assert_any(
+        &mut self,
+        mut holds: impl FnMut(ROQueryItem<'_, '_, D>) -> bool,
+    ) -> &mut Self {
+        let (mut found, mut any) = (0, false);
+        for item in self.matches() {
+            found += 1;
+            if holds(item) {
+                any = true;
+                break;
+            }
+        }
         assert!(
             any,
-            "none of {found} {} is as expected",
-            describe::short::<D>()
+            "none of the {found} {} matches is as expected",
+            describe::query::<D, F>()
         );
         self
     }
@@ -121,8 +130,8 @@ impl<'w, D: ReadOnlyQueryData + 'static, F: QueryFilter + 'static> QueryCheck<'w
         }
         assert!(
             matched == 0,
-            "{matched} of {found} {} are as they shouldn't be",
-            describe::short::<D>()
+            "{matched} of the {found} {} matches are as they shouldn't be",
+            describe::query::<D, F>()
         );
         self
     }

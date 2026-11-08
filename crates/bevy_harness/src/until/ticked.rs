@@ -2,21 +2,13 @@
 
 use core::time::Duration;
 
-use bevy::ecs::world::World;
-
 use crate::app::TestApp;
 use crate::world::TestWorld;
 
-/// What [`Until`](super::Until) ticks: an app, or several together; and what it
-/// asks whether something holds of. Sealed: [`TestApp`] and [`TestWorld`]
-/// are all there is.
+/// What [`Until`](super::Until) ticks, and asks its condition of: an app,
+/// or several together. Sealed: [`TestApp`] and [`TestWorld`] are all
+/// there is.
 pub trait Ticked: sealed::Sealed {
-    /// What a condition is asked of: an app's world, or the apps.
-    type View;
-
-    /// It, as a condition sees it.
-    fn view(&self) -> &Self::View;
-
     /// Runs one tick.
     fn tick(&mut self);
 
@@ -33,12 +25,6 @@ mod sealed {
 }
 
 impl Ticked for TestApp {
-    type View = World;
-
-    fn view(&self) -> &World {
-        self.world()
-    }
-
     fn tick(&mut self) {
         self.tick();
     }
@@ -49,12 +35,6 @@ impl Ticked for TestApp {
 }
 
 impl Ticked for TestWorld {
-    type View = TestWorld;
-
-    fn view(&self) -> &TestWorld {
-        self
-    }
-
     fn tick(&mut self) {
         self.tick();
     }

@@ -76,10 +76,7 @@ fn linked() -> TestWorld {
 fn main() {
     let mut world = linked();
     world.secs(1.0);
-    println!(
-        "the client shows {}",
-        world["client"].world().resource::<Shown>().0
-    );
+    println!("the client shows {}", world["client"].resource::<Shown>().0);
 }
 
 #[cfg(test)]
@@ -89,23 +86,23 @@ mod tests {
     #[bevy_harness::test(setup = linked)]
     fn a_tick_is_every_apps_in_order(world: &mut TestWorld) {
         world.ticks(3);
-        assert_eq!(world["server"].world().resource::<Score>().0, 3);
+        assert_eq!(world["server"].resource::<Score>().0, 3);
         // The server ticks first: what it sent, the client hears that tick.
-        assert_eq!(world["client"].world().resource::<Shown>().0, 3);
+        assert_eq!(world["client"].resource::<Shown>().0, 3);
     }
 
     #[bevy_harness::test(setup = linked, timeout = 5)]
     fn it_waits_on_all_of_them(world: &mut TestWorld) {
         let ticks = world
-            .until(|world| world["client"].world().resource::<Shown>().0 == 10)
+            .until(|world| world["client"].resource::<Shown>().0 == 10)
             .within_secs(1.0);
         assert_eq!(ticks, 10);
     }
 
     #[bevy_harness::test(setup = linked)]
     fn one_app_is_changed_on_its_own(world: &mut TestWorld) {
-        world["server"].world_mut().resource_mut::<Score>().0 = 100;
+        world["server"].resource_mut::<Score>().0 = 100;
         world.tick();
-        assert_eq!(world["client"].world().resource::<Shown>().0, 101);
+        assert_eq!(world["client"].resource::<Shown>().0, 101);
     }
 }

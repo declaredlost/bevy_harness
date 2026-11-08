@@ -6,14 +6,19 @@ use core::time::Duration;
 use bevy::MinimalPlugins;
 use bevy::app::App;
 use bevy::ecs::bundle::Bundle;
+use bevy::ecs::component::{Component, Mutable};
 use bevy::ecs::entity::Entity;
+use bevy::ecs::event::Event;
 use bevy::ecs::message::Message;
-use bevy::ecs::query::{QueryFilter, ReadOnlyQueryData};
+use bevy::ecs::name::Name;
+use bevy::ecs::query::{QueryFilter, ReadOnlyQueryData, With};
+use bevy::ecs::resource::Resource;
 use bevy::ecs::system::{IntoSystem, RunSystemOnce};
-use bevy::ecs::world::{EntityWorldMut, World};
+use bevy::ecs::world::{EntityWorldMut, FromWorld, Mut, World};
 
 pub use self::builder::TestAppBuilder;
 use self::messages::{Recorded, watch};
+use self::triggered::{Triggered, watch_triggered};
 use crate::check::{EntityCheck, QueryCheck};
 use crate::describe;
 use crate::until::Until;
@@ -22,6 +27,7 @@ mod builder;
 mod messages;
 #[cfg(test)]
 mod tests;
+mod triggered;
 
 /// A Bevy app under test: built from the plugins under test, headless, on
 /// time that moves only a fixed tick at a time, when the test says.
@@ -167,6 +173,124 @@ impl TestApp {
         world.query_filtered::<(), F>().iter(world).count()
     }
 
+    /// The one `C` on an entity `F` matches, to change.
+    ///
+    /// It registers the components it names, as [`query`](Self::query)
+    /// does. To read one, [`query`](Self::query)'s
+    /// [`single`](QueryCheck::single).
+    ///
+    /// # Panics
+    ///
+    /// If `F` matches no entity with a `C`, or more than one, saying how
+    /// many.
+    #[track_caller]
+    pub fn single_mut<C, F>(&mut self) -> Mut<'_, C>
+    where
+        C: Component<Mutability = Mutable>,
+        F: QueryFilter + 'static,
+    {
+        let world = self.world_mut();
+        let mut matched = world.query_filtered::<Entity, (With<C>, F)>();
+        let Ok(entity) = matched.single(world) else {
+            let found = matched.iter(world).count();
+            panic!(
+                "{} matches {found}, not one",
+                describe::query::<&mut C, F>()
+            );
+        };
+        world
+            .get_mut::<C>(entity)
+            .expect("an entity a query matched with its `C`")
+    }
+
+    /// The one entity called `name` (its [`Name`]).
+    ///
+    /// # Panics
+    ///
+    /// If none is, naming those there are; or more than one is.
+    #[track_caller]
+    #[must_use]
+    pub fn named(&self, name: &str) -> Entity {
+        self.try_named(name).unwrap_or_else(|| {
+            let mut listed: Vec<&str> = self.names().map(|(_, other)| other).collect();
+            listed.sort_unstable();
+            panic!("nothing is called {name:?}; named are {listed:?}")
+        })
+    }
+
+    /// The one entity called `name` (its [`Name`]), if one is: for a
+    /// condition waiting on it.
+    ///
+    /// # Panics
+    ///
+    /// If more than one is: which one a test means is a mistake to guess.
+    #[track_caller]
+    #[must_use]
+    pub fn try_named(&self, name: &str) -> Option<Entity> {
+        let called: Vec<Entity> = self
+            .names()
+            .filter(|(_, other)| *other == name)
+            .map(|(entity, _)| entity)
+            .collect();
+        assert!(
+            called.len() <= 1,
+            "{} entities are called {name:?}: {called:?}",
+            called.len()
+        );
+        called.first().copied()
+    }
+
+    /// Every named entity, and its name.
+    fn names(&self) -> impl Iterator<Item = (Entity, &str)> {
+        let world = self.world();
+        world
+            .try_query::<(Entity, &Name)>()
+            .map(|mut query| {
+                query
+                    .iter(world)
+                    .map(|(entity, name)| (entity, name.as_str()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+            .into_iter()
+    }
+
+    /// Its `R`.
+    ///
+    /// # Panics
+    ///
+    /// If it has no `R`.
+    #[track_caller]
+    #[must_use]
+    pub fn resource<R: Resource>(&self) -> &R {
+        self.world()
+            .get_resource::<R>()
+            .unwrap_or_else(|| panic!("there's no {} resource", describe::short::<R>()))
+    }
+
+    /// Its `R`, to change.
+    ///
+    /// # Panics
+    ///
+    /// If it has no `R`.
+    #[track_caller]
+    pub fn resource_mut<R: Resource<Mutability = Mutable>>(&mut self) -> Mut<'_, R> {
+        self.world_mut()
+            .get_resource_mut::<R>()
+            .unwrap_or_else(|| panic!("there's no {} resource", describe::short::<R>()))
+    }
+
+    /// Inserts `resource`, replacing any `R` there was.
+    pub fn insert_resource<R: Resource>(&mut self, resource: R) {
+        self.world_mut().insert_resource(resource);
+    }
+
+    /// Inserts an `R` made from the world (its `Default`, often), unless
+    /// there's one already.
+    pub fn init_resource<R: Resource + FromWorld>(&mut self) {
+        self.world_mut().init_resource::<R>();
+    }
+
     /// Writes `message`, for the next update to read.
     pub fn write<M: Message>(&mut self, message: M) {
         self.world_mut().write_message(message);
@@ -188,10 +312,7 @@ impl TestApp {
     #[track_caller]
     pub fn read<M: Message>(&mut self) -> Vec<M> {
         let Some(mut recorded) = self.world_mut().get_resource_mut::<Recorded<M>>() else {
-            panic!(
-                "{} isn't watched: `watch::<M>()` it first",
-                describe::short::<M>()
-            );
+            panic!("{}", unwatched::<M>("watch"));
         };
         core::mem::take(&mut recorded.written)
     }
@@ -204,19 +325,124 @@ impl TestApp {
     /// If `M` isn't watched ([`watch`](Self::watch)), or none written is as
     /// `matches` says, printing those written.
     #[track_caller]
-    pub fn assert_wrote<M: Message + Debug>(&self, matches: impl Fn(&M) -> bool) {
-        let Some(recorded) = self.world().get_resource::<Recorded<M>>() else {
-            panic!(
-                "{} isn't watched: `watch::<M>()` it first",
-                describe::short::<M>()
-            );
-        };
+    pub fn assert_wrote<M: Message + Debug>(&self, matches: impl FnMut(&M) -> bool) {
+        let written = self.written::<M>();
         assert!(
-            recorded.written.iter().any(matches),
-            "no {} written as expected; written: {:#?}",
-            describe::short::<M>(),
-            recorded.written
+            written.iter().any(matches),
+            "no {} written as expected; written: {written:#?}",
+            describe::short::<M>()
         );
+    }
+
+    /// Asserts no `M` written since they were last read is as `matches`
+    /// says; they stay unread. `|_| true` asserts none was written at all.
+    ///
+    /// # Panics
+    ///
+    /// If `M` isn't watched ([`watch`](Self::watch)), or one written is as
+    /// `matches` says, printing those that are.
+    #[track_caller]
+    pub fn assert_wrote_none<M: Message + Debug>(&self, mut matches: impl FnMut(&M) -> bool) {
+        let unexpected: Vec<&M> = self
+            .written::<M>()
+            .iter()
+            .filter(|message| matches(message))
+            .collect();
+        assert!(
+            unexpected.is_empty(),
+            "{} {} written that shouldn't be: {unexpected:#?}",
+            unexpected.len(),
+            describe::short::<M>()
+        );
+    }
+
+    /// Every `M` written since they were last read, unread.
+    #[track_caller]
+    fn written<M: Message>(&self) -> &[M] {
+        match self.world().get_resource::<Recorded<M>>() {
+            Some(recorded) => &recorded.written,
+            None => panic!("{}", unwatched::<M>("watch")),
+        }
+    }
+
+    /// Triggers `event` now, running its observers, and then the commands
+    /// they queued: what they spawn, insert and trigger in turn is there
+    /// when it returns, as it would be after a system.
+    pub fn trigger<'a, E: Event<Trigger<'a>: Default>>(&mut self, event: E) {
+        let world = self.world_mut();
+        world.trigger(event);
+        world.flush();
+    }
+
+    /// Records every `E` triggered from now on, whatever triggers it: on
+    /// an entity or none.
+    ///
+    /// Nothing triggered before; otherwise as
+    /// [`TestAppBuilder::watch_triggered`].
+    pub fn watch_triggered<E: Event + Clone>(&mut self) {
+        watch_triggered::<E>(&mut self.app);
+    }
+
+    /// Every `E` triggered since they were last read, in the order they
+    /// were; they're read after.
+    ///
+    /// # Panics
+    ///
+    /// If `E` isn't watched ([`watch_triggered`](Self::watch_triggered)).
+    #[track_caller]
+    pub fn read_triggered<E: Event>(&mut self) -> Vec<E> {
+        let Some(mut recorded) = self.world_mut().get_resource_mut::<Triggered<E>>() else {
+            panic!("{}", unwatched::<E>("watch_triggered"));
+        };
+        core::mem::take(&mut recorded.triggered)
+    }
+
+    /// Asserts one `E` triggered since they were last read is as `matches`
+    /// says; they stay unread.
+    ///
+    /// # Panics
+    ///
+    /// If `E` isn't watched ([`watch_triggered`](Self::watch_triggered)), or
+    /// none triggered is as `matches` says, printing those triggered.
+    #[track_caller]
+    pub fn assert_triggered<E: Event + Debug>(&self, matches: impl FnMut(&E) -> bool) {
+        let triggered = self.triggered::<E>();
+        assert!(
+            triggered.iter().any(matches),
+            "no {} triggered as expected; triggered: {triggered:#?}",
+            describe::short::<E>()
+        );
+    }
+
+    /// Asserts no `E` triggered since they were last read is as `matches`
+    /// says; they stay unread. `|_| true` asserts none was triggered at all.
+    ///
+    /// # Panics
+    ///
+    /// If `E` isn't watched ([`watch_triggered`](Self::watch_triggered)), or
+    /// one triggered is as `matches` says, printing those that are.
+    #[track_caller]
+    pub fn assert_triggered_none<E: Event + Debug>(&self, mut matches: impl FnMut(&E) -> bool) {
+        let unexpected: Vec<&E> = self
+            .triggered::<E>()
+            .iter()
+            .filter(|event| matches(event))
+            .collect();
+        assert!(
+            unexpected.is_empty(),
+            "{} {} triggered that shouldn't be: {unexpected:#?}",
+            unexpected.len(),
+            describe::short::<E>()
+        );
+    }
+
+    /// Every `E` triggered since they were last read, unread.
+    #[track_caller]
+    fn triggered<E: Event>(&self) -> &[E] {
+        match self.world().get_resource::<Triggered<E>>() {
+            Some(recorded) => &recorded.triggered,
+            None => panic!("{}", unwatched::<E>("watch_triggered")),
+        }
     }
 
     /// Runs `system` once, now, outside any schedule, and returns what it
@@ -233,9 +459,22 @@ impl TestApp {
             .unwrap_or_else(|err| panic!("the system couldn't run: {err}"))
     }
 
-    /// Ticks until `holds` holds of the world: bounded by
+    /// Ticks until `holds` holds of the app: bounded by
     /// [`Until::within_ticks`] or [`Until::within`].
-    pub fn until<P: FnMut(&World) -> bool>(&mut self, holds: P) -> Until<'_, TestApp, P> {
+    ///
+    /// `holds` is handed the app, to ask what it would anywhere else:
+    /// `|app| app.count::<With<Dead>>() == 1`.
+    pub fn until<P: FnMut(&mut TestApp) -> bool>(&mut self, holds: P) -> Until<'_, TestApp, P> {
         Until::new(self, holds)
     }
+}
+
+/// The failure for reading what isn't recorded: `T` isn't watched, and
+/// `watch` would.
+fn unwatched<T>(watch: &str) -> String {
+    format!(
+        "{} isn't watched: `{watch}::<{}>()` it first",
+        describe::short::<T>(),
+        describe::short::<T>()
+    )
 }

@@ -97,7 +97,7 @@ mod tests {
     fn a_duel_is_over_within_its_timeout(duel: &mut Duel) {
         let foe = duel.foe;
         duel.app
-            .until(|world| world.get::<Health>(foe) == Some(&Health(0)))
+            .until(|app| app.entity(foe).try_get::<Health>() == Some(&Health(0)))
             .within_secs(1.0);
     }
 }
